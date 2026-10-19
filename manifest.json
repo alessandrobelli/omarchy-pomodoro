@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "alessandrobelli.pomodoro",
+  "name": "Pomodoro",
+  "version": "1.0.0",
+  "author": "Alessandro Belli",
+  "description": "Pomodoro timer with YouTube live music",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Pomodoro",
+    "description": "Pomodoro timer with YouTube live music",
+    "category": "Info",
+    "allowMultiple": false
+  }
+}

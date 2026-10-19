@@ -1,0 +1,3 @@
+# Never commit a TickTick token, even by accident.
+ticktick-token
+*.token
