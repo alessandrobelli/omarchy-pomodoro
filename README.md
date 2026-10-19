@@ -4,7 +4,7 @@ A pomodoro timer for the [Omarchy](https://omarchy.org) bar, with YouTube live
 streams or ambient sounds as focus music, and optional logging of every
 session to TickTick.
 
-![The pomodoro panel](docs/panel.png)
+![The pomodoro panel](preview.png)
 
 ## Features
 
@@ -45,6 +45,22 @@ installs it disabled until you enable it. Read the code first if you like:
 it's two QML files and a small shell script.
 
 Update later with `omarchy plugin update alessandrobelli.pomodoro`.
+
+## Remove
+
+```bash
+omarchy plugin remove alessandrobelli.pomodoro
+```
+
+This disables the plugin and deletes its folder. It leaves your timer state and any
+unsent TickTick sessions in `~/.local/state/omarchy/`, and your TickTick token
+in `~/.config/omarchy/ticktick-token`. Delete them yourself if you no longer
+need them:
+
+```bash
+rm -f ~/.local/state/omarchy/pomodoro.json ~/.local/state/omarchy/pomodoro-ticktick-queue.jsonl
+rm -f ~/.config/omarchy/ticktick-token
+```
 
 ## Use
 
