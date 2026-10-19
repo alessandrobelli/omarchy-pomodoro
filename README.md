@@ -31,7 +31,7 @@ session to TickTick.
 
 Omarchy with the Quickshell-based `omarchy-shell`, plus `mpv`, `yt-dlp`,
 `jq`, `curl`, `python3` and PipeWire's `pw-play`. All of them ship with
-Omarchy or are one `omarchy pkg add` away.
+Omarchy or are available in the Arch repositories.
 
 ## Install
 
