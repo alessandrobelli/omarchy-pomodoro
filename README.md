@@ -77,7 +77,7 @@ Pick the music in the panel's **Music** list. Add your own YouTube links under
 Scriptable through the shell's IPC, for example from a Hyprland keybinding:
 
 ```bash
-omarchy-shell alessandrobelli.pomodoro startOrPause   # also: open, toggle, skip, reset, pickTask, doneNext, restartMusic
+omarchy-shell alessandrobelli.pomodoro startOrPause   # also: open, toggle, skip, reset, pickTask, doneNext, switchTask, restartMusic
 ```
 
 ## TickTick logging
@@ -103,7 +103,9 @@ next one. **Reset** abandons a session without logging it.
 
 Finished the task before the timer? **Done, next task** logs the focus so far
 to it, marks it done in TickTick and opens the picker, while the countdown
-keeps running; the rest of the session counts towards the next task you pick. Turn logging off
+keeps running; the rest of the session counts towards the next task you pick.
+**Switch task** does the same without marking anything done, for when you
+move on from a task you haven't finished. Turn logging off
 with **Log sessions to TickTick** in the settings.
 
 The token never leaves your machine except to `api.ticktick.com`, and it's

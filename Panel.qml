@@ -314,9 +314,10 @@ Panel {
     keyCatcher.forceActiveFocus()
   }
 
-  // Done, next task: log the focus so far to the finished task, complete it in
-  // TickTick, and let the countdown carry on for whatever gets picked next.
-  function completeTaskAndContinue() {
+  // Switch task mid-focus: log the focus so far to the current task, optionally
+  // complete it in TickTick, and let the countdown carry on for whatever gets
+  // picked next.
+  function switchTask(complete) {
     var t = task
     if (!t || !t.id) return
     if (phase === "focus" && focusStartedAt > 0) {
@@ -327,9 +328,11 @@ Panel {
       if (pausedAt > 0) pausedAt = now
       saveState()
     }
-    completeProc.title = t.title
-    completeProc.command = [ticktickScript, "complete", t.projectId, t.id]
-    completeProc.running = true
+    if (complete) {
+      completeProc.title = t.title
+      completeProc.command = [ticktickScript, "complete", t.projectId, t.id]
+      completeProc.running = true
+    }
     saveSettings({ task: null })
     openPicker()
   }
@@ -606,7 +609,8 @@ Panel {
     function reset(): void { root.reset() }
     function skip(): void { root.skip() }
     function pickTask(): void { root.openFromHotkey(); root.openPicker() }
-    function doneNext(): void { root.openFromHotkey(); root.completeTaskAndContinue() }
+    function doneNext(): void { root.openFromHotkey(); root.switchTask(true) }
+    function switchTask(): void { root.openFromHotkey(); root.switchTask(false) }
     function restartMusic(): void { root.replayMusic() }
   }
 
@@ -764,13 +768,24 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
-          Button {
+          Row {
             visible: !!root.task && !root.pickerOpen
-            iconText: "󰄬"
-            text: "Done, next task"
-            foreground: root.fg
-            fontFamily: root.fontFamily
-            onClicked: root.completeTaskAndContinue()
+            spacing: Style.space(8)
+
+            Button {
+              iconText: "󰄬"
+              text: "Done, next task"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: root.switchTask(true)
+            }
+            Button {
+              iconText: "󰒭"
+              text: "Switch task"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: root.switchTask(false)
+            }
           }
 
           // Picker: search box plus results; empty search lists the next two weeks.
