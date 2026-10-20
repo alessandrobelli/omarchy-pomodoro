@@ -514,6 +514,13 @@ Panel {
     restartTimer.restart()
   }
 
+  // For when the audio went away underneath mpv, e.g. Bluetooth headphones
+  // switching to call mode and pausing it; a fresh mpv also rejoins a live stream.
+  function replayMusic() {
+    musicFailures = 0
+    restartMusic()
+  }
+
   function applyVolume(value) {
     if (!mpvProc.running) return
     volumeProc.command = [
@@ -600,6 +607,7 @@ Panel {
     function skip(): void { root.skip() }
     function pickTask(): void { root.openFromHotkey(); root.openPicker() }
     function doneNext(): void { root.openFromHotkey(); root.completeTaskAndContinue() }
+    function restartMusic(): void { root.replayMusic() }
   }
 
   // ---- Panel UI.
@@ -896,6 +904,16 @@ Panel {
           text: "MUSIC"
           foreground: root.fg
           fontFamily: root.fontFamily
+        }
+
+        Button {
+          visible: root.musicShouldPlay
+          iconText: "󰑐"
+          text: "Restart music"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+          bordered: true
+          onClicked: root.replayMusic()
         }
 
         Column {

@@ -77,7 +77,7 @@ Pick the music in the panel's **Music** list. Add your own YouTube links under
 Scriptable through the shell's IPC, for example from a Hyprland keybinding:
 
 ```bash
-omarchy-shell alessandrobelli.pomodoro startOrPause   # also: open, toggle, skip, reset, pickTask, doneNext
+omarchy-shell alessandrobelli.pomodoro startOrPause   # also: open, toggle, skip, reset, pickTask, doneNext, restartMusic
 ```
 
 ## TickTick logging
@@ -122,6 +122,9 @@ passed to `curl` on standard input, never as a command-line argument.
 
 - **No Google sign-in.** yt-dlp's YouTube login stopped working in 2024, and
   through mpv there are no ads, so YouTube Premium makes no difference here.
+- **If the music goes quiet** after a call (Bluetooth headphones switch to a
+  call profile and often pause other players), press **Restart music** in the
+  panel or run `omarchy-shell alessandrobelli.pomodoro restartMusic`.
 - **If music stops working**, YouTube has usually changed something on its
   side; `omarchy update` brings the fixed `yt-dlp`. The timer keeps running
   regardless, and you get a notification.
