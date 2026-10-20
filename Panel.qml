@@ -314,6 +314,40 @@ Panel {
     keyCatcher.forceActiveFocus()
   }
 
+  // Done, next task: log the focus so far to the finished task, complete it in
+  // TickTick, and let the countdown carry on for whatever gets picked next.
+  function completeTaskAndContinue() {
+    var t = task
+    if (!t || !t.id) return
+    if (phase === "focus" && focusStartedAt > 0) {
+      var now = Date.now()
+      logFocus(now)
+      focusStartedAt = now
+      pauseMs = 0
+      if (pausedAt > 0) pausedAt = now
+      saveState()
+    }
+    completeProc.title = t.title
+    completeProc.command = [ticktickScript, "complete", t.projectId, t.id]
+    completeProc.running = true
+    saveSettings({ task: null })
+    openPicker()
+  }
+
+  Process {
+    id: completeProc
+    property string title: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (String(text || "").trim() === "ok")
+          root.notify("󰄬", "Task done", completeProc.title)
+        else
+          root.notify("󰀦", "Couldn't complete task", "Mark \"" + completeProc.title + "\" done in TickTick.")
+      }
+    }
+  }
+
   Process {
     id: taskProc
     stdout: StdioCollector {
@@ -565,6 +599,7 @@ Panel {
     function reset(): void { root.reset() }
     function skip(): void { root.skip() }
     function pickTask(): void { root.openFromHotkey(); root.openPicker() }
+    function doneNext(): void { root.openFromHotkey(); root.completeTaskAndContinue() }
   }
 
   // ---- Panel UI.
@@ -719,6 +754,15 @@ Panel {
             leftPadding: Style.space(10)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+          }
+
+          Button {
+            visible: !!root.task && !root.pickerOpen
+            iconText: "󰄬"
+            text: "Done, next task"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.completeTaskAndContinue()
           }
 
           // Picker: search box plus results; empty search lists the next two weeks.

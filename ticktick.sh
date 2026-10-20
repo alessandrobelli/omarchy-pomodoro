@@ -4,6 +4,7 @@
 #   ticktick.sh search <keywords>   matching undone tasks as [{id, projectId, title, project}]
 #   ticktick.sh upcoming            undone tasks due in the next two weeks, same shape
 #   ticktick.sh focus <json>        log a focus record; queued and retried later if it fails
+#   ticktick.sh complete <projectId> <taskId>   mark a task done
 #
 # The token is read from ~/.config/omarchy/ticktick-token and handed to curl on
 # stdin, so it never appears in the process list.
@@ -85,8 +86,15 @@ focus)
     echo "queued"
   fi
   ;;
+complete)
+  project=${2:-} task=${3:-}
+  [[ $project =~ ^[A-Za-z0-9]+$ && $task =~ ^[A-Za-z0-9]+$ ]] || { echo "bad-id"; exit 1; }
+  out=$(api POST "/project/$project/task/$task/complete") || { echo "error"; exit 1; }
+  [[ ${out##*$'\n'} =~ ^20[01]$ ]] || { echo "error"; exit 1; }
+  echo "ok"
+  ;;
 *)
-  echo "usage: ticktick.sh search <keywords> | upcoming | focus <json>" >&2
+  echo "usage: ticktick.sh search <keywords> | upcoming | focus <json> | complete <projectId> <taskId>" >&2
   exit 1
   ;;
 esac

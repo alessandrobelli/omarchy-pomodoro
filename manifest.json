@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "alessandrobelli.pomodoro",
   "name": "Pomodoro",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Alessandro Belli",
   "description": "Pomodoro timer with YouTube live music",
   "kinds": [
