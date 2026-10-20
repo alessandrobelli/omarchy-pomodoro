@@ -257,13 +257,21 @@ Panel {
 
   function sendNextFocusLog() {
     if (logProc.running || focusLogs.length === 0) return
-    var next = focusLogs.shift()
-    logProc.command = [ticktickScript, "focus", next]
+    logProc.request = focusLogs.shift()
+    logProc.command = [ticktickScript, "focus"]
     logProc.running = true
   }
 
+  // Requests go to ticktick.sh as one JSON line on stdin, never as arguments,
+  // so task ids, search text and focus records stay out of the process list.
   Process {
     id: logProc
+    property string request: ""
+    stdinEnabled: true
+    onStarted: {
+      write(request + "\n")
+      request = ""
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -304,7 +312,8 @@ Panel {
     if (taskProc.running) taskProc.running = false
     taskStatus = "loading"
     var q = taskQuery.trim()
-    taskProc.command = q === "" ? [ticktickScript, "upcoming"] : [ticktickScript, "search", q]
+    taskProc.request = q === "" ? "{}" : JSON.stringify({ keywords: q })
+    taskProc.command = [ticktickScript, q === "" ? "upcoming" : "search"]
     taskProc.running = true
   }
 
@@ -329,8 +338,8 @@ Panel {
       saveState()
     }
     if (complete) {
-      completeProc.title = t.title
-      completeProc.command = [ticktickScript, "complete", t.projectId, t.id]
+      completeProc.request = JSON.stringify({ projectId: t.projectId, taskId: t.id })
+      completeProc.command = [ticktickScript, "complete"]
       completeProc.running = true
     }
     saveSettings({ task: null })
@@ -339,20 +348,32 @@ Panel {
 
   Process {
     id: completeProc
-    property string title: ""
+    property string request: ""
+    stdinEnabled: true
+    onStarted: {
+      write(request + "\n")
+      request = ""
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        // Notifications are sent with command-line arguments, so they name no task.
         if (String(text || "").trim() === "ok")
-          root.notify("󰄬", "Task done", completeProc.title)
+          root.notify("󰄬", "Task done", "Marked done in TickTick.")
         else
-          root.notify("󰀦", "Couldn't complete task", "Mark \"" + completeProc.title + "\" done in TickTick.")
+          root.notify("󰀦", "Couldn't complete task", "Mark it done in TickTick instead.")
       }
     }
   }
 
   Process {
     id: taskProc
+    property string request: ""
+    stdinEnabled: true
+    onStarted: {
+      write(request + "\n")
+      request = ""
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
