@@ -443,16 +443,50 @@ Panel {
     running: root.running
     onTriggered: {
       root.nowMs = Date.now()
-      if (root.endsAt - root.nowMs <= 0) root.finishPhase()
+      // The other bars pick up the next phase from the state file.
+      if (root.endsAt - root.nowMs <= 0 && root.isOwner) root.finishPhase()
     }
   }
 
-  // ---- Persist the timer across shell restarts.
+  // ---- One owner per shell. Every monitor's bar loads its own copy of this
+  // panel; only the copy holding this lock plays music, ends phases on its own
+  // and answers IPC, so no stream, log or chime happens twice.
+
+  property bool isOwner: false
+
+  Process {
+    id: ownerLock
+    running: true
+    stdinEnabled: true
+    // Waits for the lock, says so, then holds it until this panel goes away
+    // (cat ends when the shell closes its stdin).
+    command: ["flock", "-o", (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/alessandrobelli-pomodoro.lock",
+      "sh", "-c", "echo owner; exec cat >/dev/null"]
+    stdout: SplitParser {
+      onRead: function(line) { if (String(line).trim() === "owner") root.isOwner = true }
+    }
+    onExited: {
+      root.isOwner = false
+      ownerRetry.restart()
+    }
+  }
+
+  Timer {
+    id: ownerRetry
+    interval: 2000
+    onTriggered: ownerLock.running = true
+  }
+
+  // ---- Persist the timer across shell restarts and share it between the bars:
+  // every copy follows the state file, so a pause on one bar shows on all.
 
   property bool stateRestored: false
+  property string lastStateText: ""
+  // Bumped by a copy that isn't the owner to ask the owner for a fresh mpv.
+  property double musicReplayAt: 0
 
   function saveState() {
-    stateFile.setText(JSON.stringify({
+    lastStateText = JSON.stringify({
       phase: phase,
       running: running,
       endsAt: endsAt,
@@ -460,30 +494,40 @@ Panel {
       sessionsDone: sessionsDone,
       focusStartedAt: focusStartedAt,
       pauseMs: pauseMs,
-      pausedAt: pausedAt
-    }) + "\n")
+      pausedAt: pausedAt,
+      musicReplayAt: musicReplayAt
+    }) + "\n"
+    stateFile.setText(lastStateText)
   }
 
   function restoreState(raw) {
-    if (stateRestored) return
+    var first = !stateRestored
     stateRestored = true
+    // Our own write coming back.
+    if (raw === lastStateText) return
     var saved
     try { saved = JSON.parse(raw) } catch (e) { return }
-    if (!saved || (saved.phase !== "focus" && saved.phase !== "break")) return
+    if (!saved) return
+    if ((saved.musicReplayAt || 0) > musicReplayAt) {
+      musicReplayAt = saved.musicReplayAt
+      if (!first && isOwner) replayMusic()
+    }
+    var active = saved.phase === "focus" || saved.phase === "break"
+    if (first && !active) return
     sessionsDone = saved.sessionsDone || 0
+    // A phase that ended while the shell was down is dropped quietly.
+    if (first && saved.running && saved.endsAt <= Date.now()) return
     focusStartedAt = saved.focusStartedAt || 0
     pauseMs = saved.pauseMs || 0
     pausedAt = saved.pausedAt || 0
-    if (saved.running) {
-      // A phase that ended while the shell was down is dropped quietly.
-      if (saved.endsAt <= Date.now()) return
+    if (active && saved.running) {
       phase = saved.phase
       endsAt = saved.endsAt
-      remainingMs = saved.endsAt - Date.now()
+      remainingMs = Math.max(0, saved.endsAt - Date.now())
       nowMs = Date.now()
       running = true
     } else {
-      phase = saved.phase
+      phase = active ? saved.phase : "idle"
       remainingMs = saved.remainingMs || 0
       running = false
     }
@@ -492,7 +536,9 @@ Panel {
   FileView {
     id: stateFile
     path: Quickshell.env("HOME") + "/.local/state/omarchy/pomodoro.json"
+    watchChanges: true
     printErrors: false
+    onFileChanged: reload()
     onLoaded: root.restoreState(text())
     onLoadFailed: root.stateRestored = true
   }
@@ -500,8 +546,9 @@ Panel {
   // ---- Music: mpv plays the YouTube live stream through yt-dlp.
 
   readonly property string mpvSocket: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/alessandrobelli-pomodoro-mpv.sock"
-  readonly property bool musicShouldPlay: running && channelUrl !== ""
+  readonly property bool musicWanted: running && channelUrl !== ""
     && (phase === "focus" || (phase === "break" && !stopMusicOnBreak))
+  readonly property bool musicShouldPlay: isOwner && musicWanted
   property bool musicStopping: false
   property string playingUrl: ""
   property int musicFailures: 0
@@ -541,12 +588,18 @@ Panel {
   // For when the audio went away underneath mpv, e.g. Bluetooth headphones
   // switching to call mode and pausing it; a fresh mpv also rejoins a live stream.
   function replayMusic() {
+    if (!isOwner) {
+      musicReplayAt = Date.now()
+      saveState()
+      return
+    }
     musicFailures = 0
     restartMusic()
   }
 
+  // Goes straight to the owner's mpv socket, so any bar's slider works.
   function applyVolume(value) {
-    if (!mpvProc.running) return
+    if (!musicWanted) return
     volumeProc.command = [
       "python3", "-I", "-c",
       "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ns.sendall(sys.argv[2].encode()+b'\\n')",
@@ -620,6 +673,7 @@ Panel {
 
   IpcHandler {
     target: root.ipcTarget
+    enabled: root.isOwner
 
     function open(): void { root.openFromHotkey() }
     function close(): void { root.close() }
@@ -943,7 +997,7 @@ Panel {
         }
 
         Button {
-          visible: root.musicShouldPlay
+          visible: root.musicWanted
           iconText: "󰑐"
           text: "Restart music"
           foreground: root.fg
@@ -963,7 +1017,7 @@ Panel {
               required property var modelData
               width: parent.width
               leftAlign: true
-              iconText: root.channelUrl === modelData.url && mpvProc.running ? "󰝚" : "󰎈"
+              iconText: root.channelUrl === modelData.url && (root.isOwner ? mpvProc.running : root.musicWanted) ? "󰝚" : "󰎈"
               text: modelData.name
               selected: root.channelUrl === modelData.url
               foreground: root.fg
