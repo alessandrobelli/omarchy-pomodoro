@@ -7,7 +7,8 @@
 #
 #   ticktick.sh search     {"keywords": "..."}             matching undone tasks as [{id, projectId, title, project}]
 #   ticktick.sh upcoming   (no input)                      undone tasks due in the next two weeks, same shape
-#   ticktick.sh focus      {focus record}                  log a focus record; queued and retried later if it fails
+#   ticktick.sh focus      {focus record}                  log a focus record: ok, queued (retried with the next
+#                                                          one), auth (token refused, kept) or rejected (dropped)
 #   ticktick.sh complete   {"projectId": .., "taskId": ..} mark a task done
 #
 # The token, request bodies and list names likewise reach curl and jq through
@@ -70,24 +71,47 @@ slim_tasks() {
     '($names[0] // {}) as $names
      | [.[] | select(.status == 0 or .status == null)
         | {id, projectId, title,
-           project: ($names[.projectId] // (if .projectId | tostring | startswith("inbox") then "Inbox" else "" end))}]
+           project: ($names[.projectId // ""] // (if .projectId | tostring | startswith("inbox") then "Inbox" else "" end))}]
      | .[:30]'
 }
 
+# post_focus RECORD -> 0 sent, 1 worth retrying (network, 5xx, rate limit),
+# 2 refused for good (the record itself, e.g. a deleted task), 3 token refused.
 post_focus() {
-  local out
+  local out code
   out=$(api POST /focus "$1") || return 1
-  [[ ${out##*$'\n'} =~ ^20[01]$ ]]
+  code=${out##*$'\n'}
+  case $code in
+  200 | 201) return 0 ;;
+  401 | 403) return 3 ;;
+  429) return 1 ;;
+  4??) return 2 ;;
+  *) return 1 ;;
+  esac
 }
 
+# Sends what's queued. Sets token_refused and stops at the first 401/403,
+# keeping the rest; drops records TickTick refuses for good.
+token_refused=0
 flush_queue() {
   [[ -s $QUEUE ]] || return 0
-  local remaining=() line
+  local remaining=() line status
   while IFS= read -r line; do
     [[ -n $line ]] || continue
-    post_focus "$line" || remaining+=("$line")
+    if ((token_refused)); then remaining+=("$line"); continue; fi
+    post_focus "$line"
+    status=$?
+    case $status in
+    1) remaining+=("$line") ;;
+    3) token_refused=1; remaining+=("$line") ;;
+    esac
   done <"$QUEUE"
-  if ((${#remaining[@]})); then printf '%s\n' "${remaining[@]}" >"$QUEUE"; else rm -f "$QUEUE"; fi
+  # Written aside and moved into place, so a kill mid-write can't truncate the queue.
+  if ((${#remaining[@]})); then
+    printf '%s\n' "${remaining[@]}" >"$QUEUE.tmp" && mv -f "$QUEUE.tmp" "$QUEUE"
+  else
+    rm -f "$QUEUE"
+  fi
 }
 
 case "${1:-}" in
@@ -108,13 +132,23 @@ focus)
   record=$(jq -c . <<<"$request")
   [[ $record != "{}" ]] || { echo "bad-record"; exit 1; }
   mkdir -p "$(dirname "$QUEUE")"
+  # One sender at a time: two at once would post the same queued records
+  # twice, or rewrite the queue over a line the other just added.
+  exec 9>>"$QUEUE.lock"
+  flock 9
   flush_queue
-  if post_focus "$record"; then
-    echo "ok"
-  else
+  if ((token_refused)); then
     printf '%s\n' "$record" >>"$QUEUE"
-    echo "queued"
+    echo "auth"
+    exit 1
   fi
+  post_focus "$record"
+  case $? in
+  0) echo "ok" ;;
+  2) echo "rejected"; exit 1 ;;
+  3) printf '%s\n' "$record" >>"$QUEUE"; echo "auth"; exit 1 ;;
+  *) printf '%s\n' "$record" >>"$QUEUE"; echo "queued" ;;
+  esac
   ;;
 complete)
   project=$(jq -r '.projectId // ""' <<<"$request")

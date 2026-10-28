@@ -58,7 +58,7 @@ in `~/.config/omarchy/ticktick-token`. Delete them yourself if you no longer
 need them:
 
 ```bash
-rm -f ~/.local/state/omarchy/pomodoro.json ~/.local/state/omarchy/pomodoro-ticktick-queue.jsonl
+rm -f ~/.local/state/omarchy/pomodoro.json ~/.local/state/omarchy/pomodoro-ticktick-queue.jsonl*
 rm -f ~/.config/omarchy/ticktick-token
 ```
 
@@ -88,8 +88,8 @@ omarchy-shell alessandrobelli.pomodoro startOrPause   # also: open, toggle, skip
    by you:
 
    ```bash
+   install -m 600 /dev/null ~/.config/omarchy/ticktick-token
    nano ~/.config/omarchy/ticktick-token
-   chmod 600 ~/.config/omarchy/ticktick-token
    ```
 
 3. A **Working on** section appears under the timer. Pick a task from what's
@@ -98,8 +98,11 @@ omarchy-shell alessandrobelli.pomodoro startOrPause   # also: open, toggle, skip
 When a focus ends, or is skipped after at least a minute, it's sent to TickTick
 through the official Open API (`POST /open/v1/focus`) with its start and end,
 the time actually focused, the paused time, and the task. If TickTick can't be
-reached, the session is queued in `~/.local/state/omarchy/` and sent with the
-next one. **Reset** abandons a session without logging it.
+reached, or refuses the token, the session is queued in `~/.local/state/omarchy/`
+and sent with the next one; a session TickTick refuses outright (say, for a
+deleted task) is dropped with a notification. A focus that ends while the shell
+is closed, or the laptop is asleep, is logged up to its planned end.
+**Reset** abandons a session without logging it.
 
 Finished the task before the timer? **Done, next task** logs the focus so far
 to it, marks it done in TickTick and opens the picker, while the countdown
@@ -108,8 +111,10 @@ keeps running; the rest of the session counts towards the next task you pick.
 move on from a task you haven't finished. Turn logging off
 with **Log sessions to TickTick** in the settings.
 
-The token never leaves your machine except to `api.ticktick.com`, and it's
-passed to `curl` on standard input, never as a command-line argument.
+The token never leaves your machine except to `api.ticktick.com`. It reaches
+`curl` through a config file readable only by you in a private folder under
+`$XDG_RUNTIME_DIR`, deleted when the request is done, never as a command-line
+argument.
 
 ## Where things are stored
 

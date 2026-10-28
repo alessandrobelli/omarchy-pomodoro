@@ -86,8 +86,16 @@ Panel {
     for (var r in pendingSettings) pending[r] = pendingSettings[r]
     for (var s in patch) pending[s] = patch[s]
     pendingSettings = pending
-    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
-      root.bar.shell.updateEntryInline(root.moduleName, next)
+    var written = root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function"
+      && root.bar.shell.updateEntryInline(root.moduleName, next)
+    // Nothing changed (e.g. the selected channel clicked again), so no settings
+    // update will come back to clear these; left pending they would shadow a
+    // change made later on another monitor's bar and get written back over it.
+    if (!written) {
+      var kept = {}
+      for (var t in pendingSettings) if (!(t in patch)) kept[t] = pendingSettings[t]
+      pendingSettings = kept
+    }
   }
 
   // Drop pending values once shell.json has caught up with them.
@@ -145,6 +153,9 @@ Panel {
   property double focusStartedAt: 0
   property double pauseMs: 0
   property double pausedAt: 0
+  // Identifies the current phase, so a request from another bar can't skip or
+  // log a phase that has already moved on.
+  property double phaseId: 0
 
   readonly property bool paused: phase !== "idle" && !running
   readonly property double phaseTotalMs: (phase === "break" ? breakMinutes : focusMinutes) * 60000
@@ -175,6 +186,10 @@ Panel {
       pauseMs = 0
     }
     phase = next
+    phaseId = Date.now()
+    // A new phase starts unpaused; a pause left over from a skipped phase
+    // would otherwise count as paused time in the next focus record.
+    pausedAt = 0
     remainingMs = minutes * 60000
     endsAt = Date.now() + remainingMs
     nowMs = Date.now()
@@ -207,6 +222,7 @@ Panel {
 
   function reset() {
     phase = "idle"
+    phaseId = 0
     running = false
     remainingMs = 0
     sessionsDone = 0
@@ -233,11 +249,15 @@ Panel {
       + sign + pad(Math.floor(offset / 60)) + pad(offset % 60)
   }
 
-  function logFocus(endMs) {
+  // t is the task the time counts towards (the current one when left out);
+  // s holds focusStartedAt, pauseMs and pausedAt (the live timer when left out).
+  function logFocus(endMs, t, s) {
     if (!ticktickLogging || !hasToken) return
-    var paused = pauseMs + (pausedAt > 0 ? endMs - pausedAt : 0)
+    if (t === undefined) t = task
+    s = s || root
+    var paused = s.pauseMs + (s.pausedAt > 0 ? endMs - s.pausedAt : 0)
     // Sessions from before logging existed have no start; work it back from the clock.
-    var start = focusStartedAt > 0 ? focusStartedAt : endMs - (phaseTotalMs - leftMs) - paused
+    var start = s.focusStartedAt > 0 ? s.focusStartedAt : endMs - (phaseTotalMs - leftMs) - paused
     var activeMs = endMs - start - paused
     // A skip in the first minute isn't worth a record.
     if (activeMs < 60000) return
@@ -248,10 +268,26 @@ Panel {
       duration: Math.round(activeMs / 1000),
       pauseDuration: Math.round(paused / 1000)
     }
-    if (task && task.id) record.taskId = task.id
+    if (t && t.id) record.taskId = t.id
     focusLogs.push(JSON.stringify(record))
     sendNextFocusLog()
   }
+
+  // A focus that ran out while the shell was down, logged once this copy is
+  // the owner and the token has loaded.
+  property var expiredFocus: null
+
+  function logExpiredFocus() {
+    if (!expiredFocus || !isOwner || !hasToken) return
+    var f = expiredFocus
+    expiredFocus = null
+    logFocus(f.endsAt, task, f)
+    // Replace the expired state on disk, so the next restart doesn't log it again.
+    if (phase === "idle") saveState()
+  }
+
+  onIsOwnerChanged: logExpiredFocus()
+  onHasTokenChanged: logExpiredFocus()
 
   property var focusLogs: []
 
@@ -278,6 +314,10 @@ Panel {
         var result = String(text || "").trim()
         if (result === "queued")
           root.notify("󰔟", "TickTick unreachable", "The session is saved and will be sent with the next one.")
+        else if (result === "auth")
+          root.notify("󰀦", "TickTick refused the token", "Sessions are kept and sent once ~/.config/omarchy/ticktick-token works again.")
+        else if (result === "rejected")
+          root.notify("󰀦", "TickTick rejected the session", "It wasn't logged; the task may have been deleted.")
         else if (result !== "ok")
           root.notify("󰀦", "TickTick logging failed", "Check the token in ~/.config/omarchy/ticktick-token.")
       }
@@ -308,9 +348,19 @@ Panel {
     Qt.callLater(function() { taskSearchField.forceActiveFocus() })
   }
 
+  // Set while an outdated search is being stopped: its results are dropped and
+  // the current query runs once it has exited.
+  property bool taskReloadPending: false
+
   function loadTasks() {
-    if (taskProc.running) taskProc.running = false
     taskStatus = "loading"
+    // The reload already queued will read the latest query.
+    if (taskReloadPending) return
+    if (taskProc.running) {
+      taskReloadPending = true
+      taskProc.running = false
+      return
+    }
     var q = taskQuery.trim()
     taskProc.request = q === "" ? "{}" : JSON.stringify({ keywords: q })
     taskProc.command = [ticktickScript, q === "" ? "upcoming" : "search"]
@@ -325,25 +375,40 @@ Panel {
 
   // Switch task mid-focus: log the focus so far to the current task, optionally
   // complete it in TickTick, and let the countdown carry on for whatever gets
-  // picked next.
+  // picked next. The picker opens on this bar; the logging happens on the owner.
   function switchTask(complete) {
     var t = task
     if (!t || !t.id) return
-    if (phase === "focus" && focusStartedAt > 0) {
+    if (isOwner) applySwitch(t, complete, phaseId)
+    else sendRequest({ action: "switch", task: t, complete: complete, phaseId: phaseId })
+    saveSettings({ task: null })
+    openPicker()
+  }
+
+  function applySwitch(t, complete, forPhase) {
+    if (phase === "focus" && focusStartedAt > 0 && forPhase === phaseId) {
       var now = Date.now()
-      logFocus(now)
+      logFocus(now, t)
       focusStartedAt = now
       pauseMs = 0
-      if (pausedAt > 0) pausedAt = now
+      if (!running && pausedAt > 0) pausedAt = now
       saveState()
     }
     if (complete) {
-      completeProc.request = JSON.stringify({ projectId: t.projectId, taskId: t.id })
-      completeProc.command = [ticktickScript, "complete"]
-      completeProc.running = true
+      completions.push(JSON.stringify({ projectId: t.projectId, taskId: t.id }))
+      sendNextCompletion()
     }
-    saveSettings({ task: null })
-    openPicker()
+  }
+
+  // Completions wait their turn, so a second one sent while the first is
+  // still running isn't lost.
+  property var completions: []
+
+  function sendNextCompletion() {
+    if (completeProc.running || completions.length === 0) return
+    completeProc.request = completions.shift()
+    completeProc.command = [ticktickScript, "complete"]
+    completeProc.running = true
   }
 
   Process {
@@ -364,6 +429,7 @@ Panel {
           root.notify("󰀦", "Couldn't complete task", "Mark it done in TickTick instead.")
       }
     }
+    onExited: Qt.callLater(root.sendNextCompletion)
   }
 
   Process {
@@ -377,6 +443,7 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (root.taskReloadPending) return
         var raw = String(text || "").trim()
         try {
           var list = JSON.parse(raw)
@@ -388,6 +455,11 @@ Panel {
         }
       }
     }
+    onExited: {
+      if (!root.taskReloadPending) return
+      root.taskReloadPending = false
+      Qt.callLater(root.loadTasks)
+    }
   }
 
   Timer {
@@ -397,12 +469,16 @@ Panel {
   }
 
   function skip() {
-    if (phase !== "idle") finishPhase()
+    if (phase === "idle") return
+    if (isOwner) finishPhase()
+    else sendRequest({ action: "skip", phaseId: phaseId })
   }
 
   function finishPhase() {
     if (phase === "focus") {
-      logFocus(Date.now())
+      // After a suspend the timer fires late; count the focus up to its planned
+      // end, not the hours the laptop was asleep.
+      logFocus(running ? Math.min(Date.now(), endsAt) : Date.now())
       sessionsDone += 1
       notify("󰅶", "Focus done", "Take a " + breakMinutes + " minute break.")
       beginPhase("break")
@@ -413,6 +489,7 @@ Panel {
       } else {
         notify("󰔛", "Break over", "Start the next focus session when you're ready.")
         phase = "focus"
+        phaseId = Date.now()
         running = false
         remainingMs = focusMinutes * 60000
         focusStartedAt = 0
@@ -453,6 +530,7 @@ Panel {
   // and answers IPC, so no stream, log or chime happens twice.
 
   property bool isOwner: false
+  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
 
   Process {
     id: ownerLock
@@ -460,7 +538,7 @@ Panel {
     stdinEnabled: true
     // Waits for the lock, says so, then holds it until this panel goes away
     // (cat ends when the shell closes its stdin).
-    command: ["flock", "-o", (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/alessandrobelli-pomodoro.lock",
+    command: ["flock", "-o", root.runtimeDir + "/alessandrobelli-pomodoro.lock",
       "sh", "-c", "echo owner; exec cat >/dev/null"]
     stdout: SplitParser {
       onRead: function(line) { if (String(line).trim() === "owner") root.isOwner = true }
@@ -482,20 +560,18 @@ Panel {
 
   property bool stateRestored: false
   property string lastStateText: ""
-  // Bumped by a copy that isn't the owner to ask the owner for a fresh mpv.
-  property double musicReplayAt: 0
 
   function saveState() {
     lastStateText = JSON.stringify({
       phase: phase,
+      phaseId: phaseId,
       running: running,
       endsAt: endsAt,
       remainingMs: remainingMs,
       sessionsDone: sessionsDone,
       focusStartedAt: focusStartedAt,
       pauseMs: pauseMs,
-      pausedAt: pausedAt,
-      musicReplayAt: musicReplayAt
+      pausedAt: pausedAt
     }) + "\n"
     stateFile.setText(lastStateText)
   }
@@ -508,18 +584,26 @@ Panel {
     var saved
     try { saved = JSON.parse(raw) } catch (e) { return }
     if (!saved) return
-    if ((saved.musicReplayAt || 0) > musicReplayAt) {
-      musicReplayAt = saved.musicReplayAt
-      if (!first && isOwner) replayMusic()
-    }
+    // Another copy has written newer state, so it dealt with the expired focus.
+    if (!first) expiredFocus = null
     var active = saved.phase === "focus" || saved.phase === "break"
     if (first && !active) return
     sessionsDone = saved.sessionsDone || 0
-    // A phase that ended while the shell was down is dropped quietly.
-    if (first && saved.running && saved.endsAt <= Date.now()) return
+    // A phase that ended while the shell was down isn't resumed, but a focus
+    // still gets logged up to its planned end.
+    if (first && saved.running && saved.endsAt <= Date.now()) {
+      if (saved.phase === "focus" && saved.focusStartedAt > 0) {
+        expiredFocus = { endsAt: saved.endsAt, focusStartedAt: saved.focusStartedAt,
+          pauseMs: saved.pauseMs || 0, pausedAt: 0 }
+        logExpiredFocus()
+      }
+      return
+    }
+    phaseId = saved.phaseId || 0
     focusStartedAt = saved.focusStartedAt || 0
     pauseMs = saved.pauseMs || 0
-    pausedAt = saved.pausedAt || 0
+    // Older versions could leave a stale pause behind on a running timer.
+    pausedAt = saved.running ? 0 : (saved.pausedAt || 0)
     if (active && saved.running) {
       phase = saved.phase
       endsAt = saved.endsAt
@@ -543,9 +627,47 @@ Panel {
     onLoadFailed: root.stateRestored = true
   }
 
+  // ---- Requests to the owner. A copy that isn't the owner asks for a skip,
+  // a task switch or fresh music through this file instead of acting itself,
+  // so a phase is never finished or logged by two copies at once.
+
+  property string lastRequestId: ""
+
+  function sendRequest(request) {
+    request.id = Date.now() + "-" + Math.random().toString(36).slice(2)
+    request.at = Date.now()
+    lastRequestId = request.id
+    requestFile.setText(JSON.stringify(request) + "\n")
+  }
+
+  function handleRequest(raw) {
+    var request
+    try { request = JSON.parse(raw) } catch (e) { return }
+    if (!request || !request.id || request.id === lastRequestId) return
+    lastRequestId = request.id
+    // A request left over from before a restart is stale.
+    if (!isOwner || Date.now() - (request.at || 0) > 10000) return
+    if (request.action === "skip") {
+      if (request.phaseId === phaseId && phase !== "idle") finishPhase()
+    } else if (request.action === "switch") {
+      if (request.task && request.task.id) applySwitch(request.task, request.complete === true, request.phaseId)
+    } else if (request.action === "replayMusic") {
+      replayMusic()
+    }
+  }
+
+  FileView {
+    id: requestFile
+    path: root.runtimeDir + "/alessandrobelli-pomodoro-request.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.handleRequest(text())
+  }
+
   // ---- Music: mpv plays the YouTube live stream through yt-dlp.
 
-  readonly property string mpvSocket: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/alessandrobelli-pomodoro-mpv.sock"
+  readonly property string mpvSocket: root.runtimeDir + "/alessandrobelli-pomodoro-mpv.sock"
   readonly property bool musicWanted: running && channelUrl !== ""
     && (phase === "focus" || (phase === "break" && !stopMusicOnBreak))
   readonly property bool musicShouldPlay: isOwner && musicWanted
@@ -561,16 +683,33 @@ Panel {
     else if (!musicShouldPlay && mpvProc.running) stopMusic()
   }
 
+  // Runs before mpv, then becomes it: an mpv left playing by a shell that
+  // crashed still listens on the socket, so it's told to quit first instead
+  // of playing alongside the new one.
+  readonly property string quitOldMpv: "import os,socket,sys,time\n"
+    + "try:\n"
+    + "    s=socket.socket(socket.AF_UNIX)\n"
+    + "    s.settimeout(1)\n"
+    + "    s.connect(sys.argv[1])\n"
+    + "    s.sendall(b'{\"command\":[\"quit\"]}\\n')\n"
+    + "    s.close()\n"
+    + "    time.sleep(0.3)\n"
+    + "except OSError:\n"
+    + "    pass\n"
+    + "os.execvp(sys.argv[2],sys.argv[2:])\n"
+
   function startMusic() {
     musicStopping = false
     playingUrl = channelUrl
     mpvProc.command = [
+      "python3", "-I", "-c", root.quitOldMpv, root.mpvSocket,
       "mpv", "--no-video", "--no-terminal", "--sid=no", "--loop-file=inf",
       "--ytdl-format=bestaudio/best",
       "--volume=" + root.volume,
       "--input-ipc-server=" + root.mpvSocket,
       "--force-media-title=Pomodoro · " + (channelName(playingUrl) || "music"),
-      playingUrl
+      // Everything after this is a file or URL, never an option.
+      "--", playingUrl
     ]
     mpvProc.running = true
   }
@@ -589,8 +728,7 @@ Panel {
   // switching to call mode and pausing it; a fresh mpv also rejoins a live stream.
   function replayMusic() {
     if (!isOwner) {
-      musicReplayAt = Date.now()
-      saveState()
+      sendRequest({ action: "replayMusic" })
       return
     }
     musicFailures = 0
@@ -652,7 +790,7 @@ Panel {
 
   function addChannel(name, url) {
     var trimmedUrl = String(url || "").trim()
-    if (trimmedUrl === "") return false
+    if (!/^https?:\/\/\S+$/i.test(trimmedUrl)) return false
     var trimmedName = String(name || "").trim() || "Channel " + (channels.length + 1)
     var next = channels.slice()
     next.push({ name: trimmedName, url: trimmedUrl })
